@@ -1,0 +1,12 @@
+{
+  "name": "suno-prep",
+  "version": "1.0.0",
+  "description": "Audio processing script for pitch shift and time stretch",
+  "main": "process-audio.js",
+  "scripts": {
+    "start": "node process-audio.js"
+  },
+  "dependencies": {
+    "fluent-ffmpeg": "^2.1.3"
+  }
+}
