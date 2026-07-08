@@ -4,3 +4,9 @@ node_modules/
 output/
 
 input/
+
+.sea-build/
+
+libs/
+
+dist/

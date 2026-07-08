@@ -9,6 +9,13 @@ Audio resampling tool that shifts pitch by semitones by resampling the source au
 - [Node.js](https://nodejs.org/) (v18 or later)
 - FFmpeg
 
+The app does not use a global FFmpeg installation. It looks only in the current working directory: first for `ffmpeg` and `ffprobe` directly in the folder, then in `libs/`. If they are missing, the app automatically downloads an OS-appropriate local copy into `libs/` in the working directory and uses that instead.
+
+To package the app into binaries with Node SEA, run `npm run build:binaries`. This writes:
+
+- `dist/suno-prep-win.exe`
+- `dist/suno-prep-mac`
+
 ---
 
 ## Step 1 — Install FFmpeg

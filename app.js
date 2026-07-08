@@ -1,10 +1,23 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
+const WORKING_DIRECTORY = process.cwd();
 const DEFAULT_SEMITONE_OFFSETS = [-24, -26, -28, -30];
 const RATE_PRECISION_DIGITS = 6;
-const DEFAULT_OUTPUT_DIR = path.join(__dirname, 'output');
+const DEFAULT_OUTPUT_DIR = path.join(WORKING_DIRECTORY, 'output');
+const LOCAL_FFMPEG_ROOT = path.join(WORKING_DIRECTORY, 'libs');
+const WINDOWS_FFMPEG_DOWNLOAD_URL = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip';
+const MACOS_FFMPEG_DOWNLOAD_URL = 'https://evermeet.cx/ffmpeg/getrelease/zip';
+const MACOS_FFPROBE_DOWNLOAD_URL = 'https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip';
+const LINUX_FFMPEG_DOWNLOAD_URLS = {
+  x64: 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz',
+  arm64: 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz',
+  ia32: 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-i686-static.tar.xz',
+  arm: 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz',
+};
 const PROGRESS_STEP_PERCENT = 5;
 
 async function main() {
@@ -24,10 +37,11 @@ async function main() {
     process.exit(1);
   }
 
+  const ffmpegTools = await resolveFfmpegTools();
   const outputDir = path.resolve(options.outputDir ?? DEFAULT_OUTPUT_DIR);
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const audioMetadata = await probeAudioMetadata(inputFile);
+  const audioMetadata = await probeAudioMetadata(inputFile, ffmpegTools.ffprobePath);
   const outputTargets = options.semitones.map((semitones) => ({
     semitones,
     outputFile: path.join(outputDir, buildOutputFileName(inputFile, semitones)),
@@ -35,6 +49,7 @@ async function main() {
 
   console.log(`Input: ${inputFile}`);
   console.log(`Output directory: ${outputDir}`);
+  console.log(`FFmpeg: ${ffmpegTools.ffmpegPath}`);
   console.log(`Sample rate: ${audioMetadata.sampleRate} Hz`);
 
   for (const target of outputTargets) {
@@ -44,6 +59,7 @@ async function main() {
   }
 
   await runFfmpegBatch({
+    ffmpegPath: ffmpegTools.ffmpegPath,
     inputFile,
     outputTargets,
     sampleRate: audioMetadata.sampleRate,
@@ -54,6 +70,283 @@ async function main() {
   });
 
   console.log('Semitone resampling completed successfully.');
+}
+
+async function resolveFfmpegTools() {
+  const workingDirectoryTools = getWorkingDirectoryFfmpegTools();
+
+  if (await areFfmpegToolsAvailable(workingDirectoryTools)) {
+    return workingDirectoryTools;
+  }
+
+  const localTools = getLocalFfmpegTools();
+
+  if (await areFfmpegToolsAvailable(localTools)) {
+    return localTools;
+  }
+
+  console.log(`FFmpeg not found in the working directory. Installing a local copy to ${LOCAL_FFMPEG_ROOT}`);
+  await installLocalFfmpeg();
+
+  if (!(await areFfmpegToolsAvailable(localTools))) {
+    throw new Error('Local FFmpeg install completed, but the binaries could not be started.');
+  }
+
+  return localTools;
+}
+
+function getWorkingDirectoryFfmpegTools() {
+  const extension = process.platform === 'win32' ? '.exe' : '';
+
+  return {
+    ffmpegPath: path.join(WORKING_DIRECTORY, `ffmpeg${extension}`),
+    ffprobePath: path.join(WORKING_DIRECTORY, `ffprobe${extension}`),
+  };
+}
+
+function getLocalFfmpegTools() {
+  const extension = process.platform === 'win32' ? '.exe' : '';
+
+  return {
+    ffmpegPath: path.join(LOCAL_FFMPEG_ROOT, `ffmpeg${extension}`),
+    ffprobePath: path.join(LOCAL_FFMPEG_ROOT, `ffprobe${extension}`),
+  };
+}
+
+async function areFfmpegToolsAvailable({ ffmpegPath, ffprobePath }) {
+  const [ffmpegAvailable, ffprobeAvailable] = await Promise.all([
+    isCommandAvailable(ffmpegPath, ['-version']),
+    isCommandAvailable(ffprobePath, ['-version']),
+  ]);
+
+  return ffmpegAvailable && ffprobeAvailable;
+}
+
+async function isCommandAvailable(command, args) {
+  try {
+    await runCommand(command, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function installLocalFfmpeg() {
+  switch (process.platform) {
+    case 'win32':
+      await installLocalFfmpegWindows();
+      return;
+    case 'darwin':
+      await installLocalFfmpegMacos();
+      return;
+    case 'linux':
+      await installLocalFfmpegLinux();
+      return;
+    default:
+      throw new Error(`Automatic local FFmpeg install is not supported on platform: ${process.platform}`);
+  }
+}
+
+async function installLocalFfmpegWindows() {
+  fs.mkdirSync(LOCAL_FFMPEG_ROOT, { recursive: true });
+
+  const archivePath = path.join(LOCAL_FFMPEG_ROOT, 'ffmpeg-release-essentials.zip');
+  const extractDir = path.join(LOCAL_FFMPEG_ROOT, `extract-${Date.now()}-${process.pid}`);
+
+  try {
+    console.log('Downloading FFmpeg...');
+    await downloadFile(WINDOWS_FFMPEG_DOWNLOAD_URL, archivePath);
+
+    console.log('Extracting FFmpeg...');
+    fs.mkdirSync(extractDir, { recursive: true });
+    await extractZipWindows(archivePath, extractDir);
+
+    const extractedBinDir = findDirectoryContainingFiles(extractDir, ['ffmpeg.exe', 'ffprobe.exe']);
+
+    if (!extractedBinDir) {
+      throw new Error('Could not locate ffmpeg.exe and ffprobe.exe in the downloaded archive.');
+    }
+
+    const localTools = getLocalFfmpegTools();
+    fs.rmSync(localTools.ffmpegPath, { force: true });
+    fs.rmSync(localTools.ffprobePath, { force: true });
+    fs.copyFileSync(path.join(extractedBinDir, 'ffmpeg.exe'), localTools.ffmpegPath);
+    fs.copyFileSync(path.join(extractedBinDir, 'ffprobe.exe'), localTools.ffprobePath);
+  } finally {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.rmSync(archivePath, { force: true });
+  }
+}
+
+async function installLocalFfmpegMacos() {
+  fs.mkdirSync(LOCAL_FFMPEG_ROOT, { recursive: true });
+
+  const downloads = [
+    { url: MACOS_FFMPEG_DOWNLOAD_URL, archiveName: 'ffmpeg-macos.zip', binaryName: 'ffmpeg' },
+    { url: MACOS_FFPROBE_DOWNLOAD_URL, archiveName: 'ffprobe-macos.zip', binaryName: 'ffprobe' },
+  ];
+
+  for (const download of downloads) {
+    await installSingleBinaryFromZip(download);
+  }
+}
+
+async function installLocalFfmpegLinux() {
+  const archiveUrl = LINUX_FFMPEG_DOWNLOAD_URLS[process.arch];
+
+  if (!archiveUrl) {
+    throw new Error(`Automatic local FFmpeg install is not supported for Linux architecture: ${process.arch}`);
+  }
+
+  fs.mkdirSync(LOCAL_FFMPEG_ROOT, { recursive: true });
+
+  const archivePath = path.join(LOCAL_FFMPEG_ROOT, `ffmpeg-linux-${process.arch}.tar.xz`);
+  const extractDir = path.join(LOCAL_FFMPEG_ROOT, `extract-${Date.now()}-${process.pid}`);
+
+  try {
+    console.log('Downloading FFmpeg...');
+    await downloadFile(archiveUrl, archivePath);
+
+    console.log('Extracting FFmpeg...');
+    fs.mkdirSync(extractDir, { recursive: true });
+    await extractTarXzArchive(archivePath, extractDir);
+
+    const extractedBinDir = findDirectoryContainingFiles(extractDir, ['ffmpeg', 'ffprobe']);
+
+    if (!extractedBinDir) {
+      throw new Error('Could not locate ffmpeg and ffprobe in the downloaded archive.');
+    }
+
+    const localTools = getLocalFfmpegTools();
+    copyBinary(path.join(extractedBinDir, 'ffmpeg'), localTools.ffmpegPath);
+    copyBinary(path.join(extractedBinDir, 'ffprobe'), localTools.ffprobePath);
+  } finally {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.rmSync(archivePath, { force: true });
+  }
+}
+
+async function installSingleBinaryFromZip({ url, archiveName, binaryName }) {
+  const archivePath = path.join(LOCAL_FFMPEG_ROOT, archiveName);
+  const extractDir = path.join(LOCAL_FFMPEG_ROOT, `extract-${binaryName}-${Date.now()}-${process.pid}`);
+
+  try {
+    console.log(`Downloading ${binaryName}...`);
+    await downloadFile(url, archivePath);
+
+    console.log(`Extracting ${binaryName}...`);
+    fs.mkdirSync(extractDir, { recursive: true });
+    await extractZipArchive(archivePath, extractDir);
+
+    const binaryPath = findFileInDirectory(extractDir, binaryName);
+
+    if (!binaryPath) {
+      throw new Error(`Could not locate ${binaryName} in the downloaded archive.`);
+    }
+
+    copyBinary(binaryPath, path.join(LOCAL_FFMPEG_ROOT, binaryName));
+  } finally {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.rmSync(archivePath, { force: true });
+  }
+}
+
+async function downloadFile(url, destinationPath) {
+  const response = await fetch(url);
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Failed to download FFmpeg archive: ${response.status} ${response.statusText}`.trim());
+  }
+
+  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(destinationPath));
+}
+
+function extractZipWindows(archivePath, destinationDir) {
+  const powershellPath = path.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe'
+  );
+
+  return runCommand(powershellPath, [
+    '-NoProfile',
+    '-Command',
+    `Expand-Archive -LiteralPath '${escapePowerShellString(archivePath)}' -DestinationPath '${escapePowerShellString(destinationDir)}' -Force`,
+  ]);
+}
+
+function extractZipArchive(archivePath, destinationDir) {
+  if (process.platform === 'win32') {
+    return extractZipWindows(archivePath, destinationDir);
+  }
+
+  return runCommand('unzip', ['-o', archivePath, '-d', destinationDir]);
+}
+
+function extractTarXzArchive(archivePath, destinationDir) {
+  return runCommand('tar', ['-xJf', archivePath, '-C', destinationDir]);
+}
+
+function escapePowerShellString(value) {
+  return value.replace(/'/g, "''");
+}
+
+function copyBinary(sourcePath, destinationPath) {
+  fs.rmSync(destinationPath, { force: true });
+  fs.copyFileSync(sourcePath, destinationPath);
+
+  if (process.platform !== 'win32') {
+    fs.chmodSync(destinationPath, 0o755);
+  }
+}
+
+function findFileInDirectory(rootDir, fileName) {
+  const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name);
+
+    if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) {
+      return entryPath;
+    }
+
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const nestedMatch = findFileInDirectory(entryPath, fileName);
+
+    if (nestedMatch) {
+      return nestedMatch;
+    }
+  }
+
+  return null;
+}
+
+function findDirectoryContainingFiles(rootDir, requiredFiles) {
+  const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+  const entryNames = new Set(entries.map((entry) => entry.name.toLowerCase()));
+
+  if (requiredFiles.every((fileName) => entryNames.has(fileName.toLowerCase()))) {
+    return rootDir;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const nestedMatch = findDirectoryContainingFiles(path.join(rootDir, entry.name), requiredFiles);
+
+    if (nestedMatch) {
+      return nestedMatch;
+    }
+  }
+
+  return null;
 }
 
 function parseArgs(args) {
@@ -149,6 +442,8 @@ Options:
   -s, --semitones <value>      Optional semitone shift to generate a single specific version.
   -h, --help                   Show this help message
 
+The app only uses ffmpeg/ffprobe from the current working directory: either ./ffmpeg(.exe) and ./ffprobe(.exe), or ./libs/. If they are missing, the app downloads an OS-appropriate local copy into ./libs automatically.
+
 Example:
   node app.js input/song.mp3 --output-dir output
   node app.js input/song.mp3 --output-dir output --semitones 7
@@ -176,7 +471,7 @@ function formatSemitoneLabel(semitones) {
   return `${semitones > 0 ? '+' : ''}${semitones} st`;
 }
 
-async function probeAudioMetadata(inputFile) {
+async function probeAudioMetadata(inputFile, ffprobePath) {
   const ffprobeArgs = [
     '-v',
     'error',
@@ -189,7 +484,7 @@ async function probeAudioMetadata(inputFile) {
     inputFile,
   ];
 
-  const { stdout } = await runCommand('ffprobe', ffprobeArgs);
+  const { stdout } = await runCommand(ffprobePath, ffprobeArgs);
   const payload = JSON.parse(stdout);
   const stream = payload.streams?.[0];
   const sampleRate = Number.parseInt(stream?.sample_rate, 10);
@@ -206,8 +501,8 @@ async function probeAudioMetadata(inputFile) {
   return { sampleRate, durationSeconds };
 }
 
-function runFfmpeg({ inputFile, outputFile, sampleRate, pitchRatio, expectedDurationSeconds }) {
-  return runCommand('ffmpeg', [
+function runFfmpeg({ ffmpegPath, inputFile, outputFile, sampleRate, pitchRatio, expectedDurationSeconds }) {
+  return runCommand(ffmpegPath, [
     '-hide_banner',
     '-loglevel',
     'error',
@@ -225,11 +520,12 @@ function runFfmpeg({ inputFile, outputFile, sampleRate, pitchRatio, expectedDura
   });
 }
 
-function runFfmpegBatch({ inputFile, outputTargets, sampleRate, expectedDurationSeconds }) {
+function runFfmpegBatch({ ffmpegPath, inputFile, outputTargets, sampleRate, expectedDurationSeconds }) {
   if (outputTargets.length === 1) {
     const [target] = outputTargets;
 
     return runFfmpeg({
+      ffmpegPath,
       inputFile,
       outputFile: target.outputFile,
       sampleRate,
@@ -264,7 +560,7 @@ function runFfmpegBatch({ inputFile, outputTargets, sampleRate, expectedDuration
     args.push('-map', `[out${index}]`, outputTargets[index].outputFile);
   }
 
-  return runCommand('ffmpeg', args, {
+  return runCommand(ffmpegPath, args, {
     onProgress: createProgressReporter(expectedDurationSeconds),
   });
 }

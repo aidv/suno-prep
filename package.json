@@ -4,6 +4,10 @@
   "description": "Audio resampling script for semitone pitch and speed changes",
   "main": "app.js",
   "scripts": {
-    "resample-octaves": "node app.js"
+    "resample-octaves": "node app.js",
+    "build:binaries": "node build-binaries.js"
+  },
+  "devDependencies": {
+    "postject": "^1.0.0-alpha.6"
   }
 }
