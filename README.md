@@ -1,6 +1,6 @@
 # suno-prep
 
-Audio processing tool that generates pitch-shifted and time-stretched variants of audio files using FFmpeg. Drop files into `input/` and get all combinations in `output/`.
+Audio resampling tool that shifts pitch by semitones by resampling the source audio.
 
 ---
 
@@ -59,30 +59,52 @@ Place your audio files (e.g. `.mp3`, `.wav`) into the `input/` folder.
 ---
 
 ## Step 4 — Run
+Use `app.js` to create resampled versions of a song.
 
-### Windows
+- By default it creates `-24` semitones
+- By default it creates `-26` semitones
+- By default it creates `-28` semitones
+- By default it creates `-30` semitones
 
-Double-click `run-process-audio.bat`, or run it from Command Prompt with an optional concurrency number:
+If you want a single specific pitch shift instead, pass `--semitones <value>`.
 
-```bat
-run-process-audio.bat 4
-```
-
-### macOS / Linux
-
-```bash
-node process-audio.js
-```
-
-With custom concurrency (faster):
+### Run
 
 ```bash
-FFMPEG_CONCURRENCY=8 node process-audio.js
+node app.js input/song.mp3 --output-dir output
 ```
 
----
+For a custom shift:
 
-## Output
+```bash
+node app.js input/song.mp3 --output-dir output --semitones 7
+```
 
-Processed files are saved to `output/`, organized by input file name, then speed, then pitch.
+You can also run it through npm:
+
+```bash
+npm run resample-octaves -- input/song.mp3 --output-dir output
+```
+
+Or:
+
+```bash
+npm run resample-octaves -- input/song.mp3 --output-dir output --semitones -5
+```
+
+### Options
+
+- `-o, --output-dir <directory>`: optional output directory; defaults to the repo `output/` directory
+- `-s, --semitones <value>`: optional semitone shift; when set, the script generates only that one resampled version
+
+With the default behavior, the script writes:
+
+- `<input>_down-24<ext>`
+- `<input>_down-26<ext>`
+- `<input>_down-28<ext>`
+- `<input>_down-30<ext>`
+
+With `--semitones 7`, it writes:
+
+- `<input>_up-7<ext>`
 

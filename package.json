@@ -1,12 +1,9 @@
 {
   "name": "suno-prep",
   "version": "1.0.0",
-  "description": "Audio processing script for pitch shift and time stretch",
-  "main": "process-audio.js",
+  "description": "Audio resampling script for semitone pitch and speed changes",
+  "main": "app.js",
   "scripts": {
-    "start": "node process-audio.js"
-  },
-  "dependencies": {
-    "fluent-ffmpeg": "^2.1.3"
+    "resample-octaves": "node app.js"
   }
 }
