@@ -94,7 +94,7 @@ In the picker, find the uploaded song and choose it as the remix source.
 
 ### Step 11 — Confirm the uploaded audio is the source for the project
 
-After selecting it, the clip appears as the active audio source in the left panel. Keep the project in **Cover** mode as shown.
+After selecting it, press play once for the clip to appear in the library.
 
 ![Step 11](assets/images/step-11.jpg)
 
